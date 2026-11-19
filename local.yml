@@ -5,7 +5,14 @@
   become: true
 
   tasks:
-    - name: Disable root SSH login and password authentication
+    - name: Remove conflicting PermitRootLogin yes lines from sshd_config
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*PermitRootLogin\s+yes\b'
+        state: absent
+      notify: Restart ssh
+
+    - name: Enforce PermitRootLogin no and PasswordAuthentication no in sshd_config
       lineinfile:
         path: /etc/ssh/sshd_config
         regexp: "^#?{{ item.key }}\\s+"
@@ -16,7 +23,14 @@
         - { key: "PasswordAuthentication", value: "no" }
       notify: Restart ssh
 
-    - name: Configure UFW firewall defaults and allow OpenSSH
+    - name: Ensure course sshd drop-in does not re-enable root login
+      file:
+        path: /etc/ssh/sshd_config.d/99-course.conf
+        state: absent
+      failed_when: false
+      notify: Restart ssh
+
+    - name: Configure UFW default policies
       ufw:
         direction: "{{ item.direction }}"
         policy: "{{ item.policy }}"
@@ -24,7 +38,7 @@
         - { direction: "incoming", policy: "deny" }
         - { direction: "outgoing", policy: "allow" }
 
-    - name: Allow OpenSSH through UFW
+    - name: Allow SSH in UFW
       ufw:
         rule: allow
         name: OpenSSH
@@ -32,6 +46,65 @@
     - name: Enable UFW
       ufw:
         state: enabled
+
+    - name: Remove suspicious cron job in /etc/cron.d
+      file:
+        path: /etc/cron.d/sysstat-collect
+        state: absent
+      failed_when: false
+
+    - name: Stop and disable rogue nclistener service
+      systemd:
+        name: nclistener.service
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove rogue nclistener unit file if present
+      file:
+        path: /etc/systemd/system/nclistener.service
+        state: absent
+      failed_when: false
+
+    - name: Reload systemd daemon after removing rogue service
+      systemd:
+        daemon_reload: true
+
+    - name: Fix permissions on world-writable /srv/app/uploads directory
+      file:
+        path: /srv/app/uploads
+        state: directory
+        mode: "0755"
+      failed_when: false
+
+    - name: Remove helpdesk from sudo group
+      user:
+        name: helpdesk
+        groups: ""
+        append: false
+      failed_when: false
+
+    - name: Remove NOPASSWD sudoers drop-in file
+      file:
+        path: /etc/sudoers.d/90-course-nopasswd
+        state: absent
+      failed_when: false
+
+    - name: Remove NOPASSWD:ALL from cloud-init sudoers if present
+      replace:
+        path: /etc/sudoers.d/90-cloud-init-users
+        regexp: 'NOPASSWD:ALL'
+        replace: 'ALL'
+        validate: '/usr/sbin/visudo -cf %s'
+      failed_when: false
+
+    - name: Restrict permissions on /opt/crm/.env credential file
+      file:
+        path: /opt/crm/.env
+        owner: root
+        group: root
+        mode: "0600"
+      failed_when: false
 
     - name: Ensure Fail2Ban is installed and configured for sshd
       apt:
@@ -48,26 +121,6 @@
           port = ssh
           backend = systemd
       notify: Restart fail2ban
-
-    - name: Remove SUID bit from /usr/local/bin/netcheck if present
-      file:
-        path: /usr/local/bin/netcheck
-        mode: "0755"
-      failed_when: false
-
-    - name: Lock kioskuser password if present
-      user:
-        name: kioskuser
-        password_lock: true
-      failed_when: false
-
-    - name: Remove NOPASSWD:ALL from sudoers drop-in if present
-      replace:
-        path: /etc/sudoers.d/90-cloud-init-users
-        regexp: 'NOPASSWD:ALL'
-        replace: 'ALL'
-        validate: '/usr/sbin/visudo -cf %s'
-      failed_when: false
 
     - name: Check if mysql client exists
       command: which mysql
