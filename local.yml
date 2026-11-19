@@ -41,7 +41,8 @@
     - name: Allow SSH in UFW
       ufw:
         rule: allow
-        name: OpenSSH
+        port: "22"
+        proto: tcp
 
     - name: Enable UFW
       ufw:
@@ -106,6 +107,16 @@
         mode: "0600"
       failed_when: false
 
+    - name: Remove SUID bit from netcheck binary
+      ansible.builtin.file:
+        path: /usr/local/bin/netcheck
+        mode: "0755"
+
+    - name: Lock kioskuser account password
+      ansible.builtin.user:
+        name: kioskuser
+        password_lock: true
+
     - name: Ensure Fail2Ban is installed and configured for sshd
       apt:
         name: fail2ban
@@ -145,6 +156,20 @@
         SQL
       when: mysql_check.rc == 0
 
+    - name: Remove NOPASSWD sudoers drop-in file
+      file:
+        path: /etc/sudoers.d/90-course-nopasswd
+        state: absent
+      failed_when: false
+
+    - name: Remove NOPASSWD:ALL from cloud-init sudoers if present
+      replace:
+        path: /etc/sudoers.d/90-cloud-init-users
+        regexp: 'NOPASSWD:ALL'
+        replace: 'ALL'
+        validate: '/usr/sbin/visudo -cf %s'
+      failed_when: false
+
   handlers:
     - name: Restart ssh
       service:
@@ -155,3 +180,4 @@
       service:
         name: fail2ban
         state: restarted
+
