@@ -1,0 +1,104 @@
+﻿---
+- name: Harden Ubuntu and MySQL for Project 2
+  hosts: localhost
+  connection: local
+  become: true
+
+  tasks:
+    - name: Disable root SSH login and password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?{{ item.key }}\\s+"
+        line: "{{ item.key }} {{ item.value }}"
+        state: present
+      loop:
+        - { key: "PermitRootLogin", value: "no" }
+        - { key: "PasswordAuthentication", value: "no" }
+      notify: Restart ssh
+
+    - name: Configure UFW firewall defaults and allow OpenSSH
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: "incoming", policy: "deny" }
+        - { direction: "outgoing", policy: "allow" }
+
+    - name: Allow OpenSSH through UFW
+      ufw:
+        rule: allow
+        name: OpenSSH
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+
+    - name: Ensure Fail2Ban is installed and configured for sshd
+      apt:
+        name: fail2ban
+        state: present
+
+    - name: Write sshd jail configuration for Fail2Ban
+      copy:
+        dest: /etc/fail2ban/jail.d/sshd.local
+        mode: "0644"
+        content: |
+          [sshd]
+          enabled = true
+          port = ssh
+          backend = systemd
+      notify: Restart fail2ban
+
+    - name: Remove SUID bit from /usr/local/bin/netcheck if present
+      file:
+        path: /usr/local/bin/netcheck
+        mode: "0755"
+      failed_when: false
+
+    - name: Lock kioskuser password if present
+      user:
+        name: kioskuser
+        password_lock: true
+      failed_when: false
+
+    - name: Remove NOPASSWD:ALL from sudoers drop-in if present
+      replace:
+        path: /etc/sudoers.d/90-cloud-init-users
+        regexp: 'NOPASSWD:ALL'
+        replace: 'ALL'
+        validate: '/usr/sbin/visudo -cf %s'
+      failed_when: false
+
+    - name: Check if mysql client exists
+      command: which mysql
+      register: mysql_check
+      changed_when: false
+      failed_when: false
+
+    - name: Harden MySQL accounts and privileges
+      shell: |
+        set -e
+        mysql <<'SQL'
+        DROP USER IF EXISTS 'root'@'%';
+        DROP USER IF EXISTS ''@'localhost';
+
+        REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'webapp'@'%';
+        GRANT SELECT, INSERT, UPDATE, DELETE ON ticketdb.* TO 'webapp'@'%';
+
+        REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'reporting'@'%';
+        GRANT SELECT ON ticketdb.* TO 'reporting'@'%';
+
+        FLUSH PRIVILEGES;
+        SQL
+      when: mysql_check.rc == 0
+
+  handlers:
+    - name: Restart ssh
+      service:
+        name: ssh
+        state: restarted
+
+    - name: Restart fail2ban
+      service:
+        name: fail2ban
+        state: restarted
